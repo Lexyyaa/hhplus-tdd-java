@@ -26,7 +26,11 @@ dependencies {
     compileOnly(libs.lombok)
     annotationProcessor(libs.lombok)
     annotationProcessor(libs.spring.boot.configuration.processor)
+
+    implementation("org.springframework.boot:spring-boot-starter-validation")
+
     testImplementation(libs.spring.boot.starter.test)
+    testImplementation("org.junit.jupiter:junit-jupiter:5.8.0")
 }
 
 // about source and compilation
