@@ -3,10 +3,8 @@ package io.hhplus.tdd.point.service;
 import io.hhplus.tdd.database.PointHistoryTable;
 import io.hhplus.tdd.database.UserPointTable;
 import io.hhplus.tdd.point.dto.PointHistoryDto;
-import io.hhplus.tdd.point.entity.PointHistory;
 import io.hhplus.tdd.point.entity.TransactionType;
 import io.hhplus.tdd.point.entity.UserPoint;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -14,6 +12,11 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+
+import java.util.Map;
+import java.util.concurrent.*;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -32,11 +35,15 @@ class PointServiceTest {
     private PointService pointService;
 
     private UserPoint currUserPoint;
+    private Lock lock;
+    private ConcurrentHashMap<Long, UserPoint> userPointMap;
 
     @BeforeEach
     public void setUp() {
         // 기본 UserPoint 설정
         currUserPoint = new UserPoint(10L, 1000L,System.currentTimeMillis());  // ID: 10, 포인트: 1000
+        lock = new ReentrantLock();
+        userPointMap = new ConcurrentHashMap<>();
     }
     @Test
     @DisplayName("[포인트충전/성공] 포인트 충전 성공")
@@ -66,9 +73,6 @@ class PointServiceTest {
         // given
         PointHistoryDto pointHistoryDto = new PointHistoryDto(10L, 5000L, TransactionType.CHARGE); // 5000 충전요청
         when(userPointTable.selectById(10L)).thenReturn(currUserPoint);
-
-        // 충전가능 (검증)
-        // when(currUserPoint.canCharge(pointHistoryDto.getAmount())).thenReturn(false); // 주석을 하니,, 돌아가는 매직...
 
         // when & then
         RuntimeException thrown = assertThrows(RuntimeException.class, () -> {
@@ -109,11 +113,6 @@ class PointServiceTest {
         UserPoint currUserPoint = new UserPoint(10L,1000 ,System.currentTimeMillis());
         when(userPointTable.selectById(pointHistoryDto.getUserId())).thenReturn(currUserPoint);
 
-        // 유저 포인트를 1000으로 설정
-        when(currUserPoint.point()).thenReturn(1000L);
-        // 잔고 부족 상황 (검증)
-        // when(currUserPoint.canUse(pointHistoryDto.getAmount())).thenReturn(false);
-
         // when & then
         RuntimeException thrown = assertThrows(RuntimeException.class, () -> {
             pointService.use(pointHistoryDto);
@@ -132,9 +131,6 @@ class PointServiceTest {
         UserPoint userPoint = new UserPoint(10L, 1000, pointHistoryDto.getUpdateMillis() + 11000);
         when(userPointTable.selectById(pointHistoryDto.getUserId())).thenReturn(userPoint);
 
-        // 포인트 만료 검증
-        // when(userPoint.isExpired(pointHistoryDto.getUpdateMillis())).thenReturn(true);
-
         // when & then
         RuntimeException thrown = assertThrows(RuntimeException.class, () -> {
             pointService.use(pointHistoryDto);
@@ -143,4 +139,100 @@ class PointServiceTest {
         assertEquals("만료된 포인트입니다.", thrown.getMessage());
     }
 
+    @Test
+    @DisplayName("[포인트 사용 및 충전/성공] 동시성 테스트 ")
+    public void 동시성_테스트() throws InterruptedException, ExecutionException {
+        // given
+        Long userId = 10L;
+
+        // 동시에 접근하지 못하도록 ConcurrentHashMap으로 Map 선언
+        Map<Long, UserPoint> userPointMap = new ConcurrentHashMap<>();
+        UserPoint userPoint = new UserPoint(10L, 0L, System.currentTimeMillis());
+        userPointMap.put(userId, userPoint);
+
+        // 포인트 사용 및 충전 상황설정
+        PointHistoryDto charge4000 = new PointHistoryDto(userId, 4000, TransactionType.CHARGE);
+        PointHistoryDto use2000 = new PointHistoryDto(userId, 2000, TransactionType.USE);
+        PointHistoryDto use1000 = new PointHistoryDto(userId, 1000, TransactionType.USE);
+        PointHistoryDto charge500 = new PointHistoryDto(userId, 500, TransactionType.CHARGE);
+        PointHistoryDto use1500 = new PointHistoryDto(userId, 1500, TransactionType.USE);
+        PointHistoryDto charge2000 = new PointHistoryDto(userId, 2000, TransactionType.CHARGE);
+
+        when(userPointTable.selectById(userId)).thenAnswer(invocation -> userPointMap.get(userId));
+        when(userPointTable.insertOrUpdate(anyLong(), anyLong())).thenAnswer(invocation -> {
+            Long id = invocation.getArgument(0);
+            Long newPoint = invocation.getArgument(1);
+            userPointMap.put(id, new UserPoint(id, newPoint, System.currentTimeMillis()));
+            return userPointMap.get(id);
+        });
+
+        ExecutorService executorService = Executors.newFixedThreadPool(10);
+        CountDownLatch latch = new CountDownLatch(1);
+
+        // 비동기 실행 task 정의(각 task의 대기시간을 1초로 제한)
+        Callable<Void> charge4000Task = () -> {
+            latch.await(1, TimeUnit.SECONDS);
+            pointService.charge(charge4000);
+            return null;
+        };
+
+        Callable<Void> use2000Task = () -> {
+            latch.await(1, TimeUnit.SECONDS);
+            pointService.use(use2000);
+            return null;
+        };
+
+        Callable<Void> use1000Task = () -> {
+            latch.await(1, TimeUnit.SECONDS);
+            pointService.use(use1000);
+            return null;
+        };
+
+        Callable<Void> charge500Task = () -> {
+            latch.await(1, TimeUnit.SECONDS);
+            pointService.charge(charge500);
+            return null;
+        };
+
+        Callable<Void> use1500Task = () -> {
+            latch.await(1, TimeUnit.SECONDS);
+            pointService.use(use1500);
+            return null;
+        };
+
+        Callable<Void> charge2000Task = () -> {
+            latch.await(1, TimeUnit.SECONDS);
+            pointService.charge(charge2000);
+            return null;
+        };
+
+        // 각 작업을 스레드로 실행
+        Future<Void>[] futures = new Future[6];
+        futures[0] = executorService.submit(charge4000Task);
+        futures[1] = executorService.submit(use2000Task);
+        futures[2] = executorService.submit(use1000Task);
+        futures[3] = executorService.submit(charge500Task);
+        futures[4] = executorService.submit(use1500Task);
+        futures[5] = executorService.submit(charge2000Task);
+
+        // 모든 작업 시작
+        latch.countDown();
+
+        // 모든 작업이 완료될 때까지 기다림
+        for (Future<Void> future : futures) {
+            future.get();
+        }
+
+        // then: 최종 포인트 확인
+        UserPoint finalUserPoint = userPointMap.get(userId);
+
+        // 4000 - 2000 - 1000 + 500 - 1500 + 2000 = 2000
+        assertEquals(2000L, finalUserPoint.point());
+
+        // 리소스 정리
+        executorService.shutdown();
+        if (!executorService.awaitTermination(1, TimeUnit.SECONDS)) {
+            executorService.shutdownNow(); // 모든 작업이 종료되지 않으면 강제로 종료
+        }
+    }
 }
