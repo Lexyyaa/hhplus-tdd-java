@@ -128,7 +128,7 @@ class PointServiceTest {
         PointHistoryDto pointHistoryDto = new PointHistoryDto(10L, 100, TransactionType.USE);  // 100 포인트 사용 요청
 
         // 유저 포인트는 1000
-        UserPoint userPoint = new UserPoint(10L, 1000, pointHistoryDto.getUpdateMillis() + 11000);
+        UserPoint userPoint = new UserPoint(10L, 1000, pointHistoryDto.getUpdateMillis() - 11000);
         when(userPointTable.selectById(pointHistoryDto.getUserId())).thenReturn(userPoint);
 
         // when & then
