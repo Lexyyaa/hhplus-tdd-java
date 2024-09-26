@@ -33,10 +33,10 @@ public record UserPoint(
     }
 
     /**
-     * 만료여부를 체크함(10초
+     * 만료여부를 체크함(10초)
      * @param requestMillis
      */
     public boolean isExpired(long requestMillis){
-        return this.updateMillis - requestMillis > 10000;
+        return requestMillis - this.updateMillis > 10000;
     }
 }
